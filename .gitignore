@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+data/
+# Go build output
+/server
+/bin/
+*.exe
+*.test
+*.db
+*.db-shm
+*.db-wal
+web/node_modules/
+web/dist/
+web/.angular/
+.DS_Store

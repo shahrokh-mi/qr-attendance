@@ -1,0 +1,130 @@
+openapi: 3.1.0
+info:
+  title: qr-attendance API
+  version: 0.1.0
+  description: Raw attendance collection. Timestamps are server assigned; no entry/exit or payroll inference is performed.
+servers:
+  - url: /api/v1
+paths:
+  /health:
+    get:
+      summary: Health status
+      responses:
+        '200': { description: Service is running }
+  /auth/csrf:
+    get:
+      summary: Establish a CSRF cookie and return its token
+      responses:
+        '200': { description: CSRF token }
+  /auth/login:
+    post:
+      summary: Create a persistent browser session
+      responses:
+        '200': { description: Session created }
+        '401': { description: Invalid credentials }
+  /auth/logout:
+    post:
+      summary: Revoke the current session
+      responses:
+        '200': { description: Session revoked }
+  /auth/me:
+    get:
+      summary: Current user and role
+      responses:
+        '200': { description: Current user }
+        '401': { description: Authentication required }
+  /auth/change-password:
+    post:
+      summary: Change current user's password
+      responses:
+        '200': { description: Password changed }
+  /admin/users:
+    get:
+      summary: List users (admin)
+      responses:
+        '200': { description: User list }
+    post:
+      summary: Create user (admin)
+      responses:
+        '201': { description: User created }
+        '409': { description: Username or employee code already exists }
+  /admin/users/{id}:
+    patch:
+      summary: Edit user details and role (admin)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: User updated }
+        '409': { description: Conflict or last-admin protection }
+  /admin/users/{id}/reset-password:
+    post:
+      summary: Reset a user's password and revoke their sessions (admin)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Password reset }
+  /admin/settings:
+    get:
+      summary: Read QR interval (admin)
+      responses:
+        '200': { description: Settings }
+    patch:
+      summary: Set QR interval (3 to 60 seconds) (admin)
+      responses:
+        '200': { description: Settings saved }
+  /admin/display/activate:
+    post:
+      summary: Provision a restricted display cookie (admin)
+      responses:
+        '201': { description: Display provisioned }
+  /admin/display/revoke:
+    post:
+      summary: Revoke display credentials (admin)
+      responses:
+        '200': { description: Displays revoked }
+  /display/challenge:
+    get:
+      summary: Get current display QR and timing (display cookie required)
+      responses:
+        '200': { description: Current challenge }
+        '401': { description: Display is not provisioned }
+  /attendance/attempts:
+    post:
+      summary: Exchange a visible challenge for a browser-bound pending attempt
+      responses:
+        '201': { description: Pending attempt created }
+        '410': { description: QR challenge expired }
+  /attendance/attempts/{id}/complete:
+    post:
+      summary: Complete a pending attempt as the authenticated employee
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '201': { description: Attendance event recorded }
+        '200': { description: Idempotent replay }
+        '410': { description: Pending attempt expired }
+  /attendance/me:
+    get:
+      summary: List current employee attendance events
+      responses:
+        '200': { description: Employee event list }
+  /admin/attendance:
+    get:
+      summary: List all attendance events (admin)
+      responses:
+        '200': { description: Company event list }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
