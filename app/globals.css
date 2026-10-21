@@ -1,0 +1,122 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Inter, sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  /* Restrained dark palette with a single teal accent. */
+  --color-ink-950: #05090b;
+  --color-ink-900: #080f12;
+  --color-ink-850: #0b1418;
+  --color-ink-800: #101b20;
+  --color-ink-750: #16242a;
+  --color-ink-700: #1c2e35;
+  --color-ink-600: #27414a;
+
+  --color-mist-100: #eaf4f6;
+  --color-mist-200: #cfdfe4;
+  --color-mist-300: #b7c9cf;
+  --color-mist-400: #8ba2ab;
+  --color-mist-500: #6b828b;
+
+  --color-teal-200: #99f6e4;
+  --color-teal-300: #5eead4;
+  --color-teal-400: #2dd4bf;
+  --color-teal-500: #14b8a6;
+  --color-teal-600: #0d9488;
+
+  --color-rose-400: #fb7185;
+  --color-amber-400: #fbbf24;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--color-ink-950);
+    background-image:
+      radial-gradient(60rem 40rem at 15% -10%, rgba(20, 184, 166, 0.13), transparent 60%),
+      radial-gradient(50rem 35rem at 100% 0%, rgba(13, 148, 136, 0.08), transparent 55%);
+    background-attachment: fixed;
+    color: var(--color-mist-100);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: rgba(45, 212, 191, 0.28);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-teal-400);
+    outline-offset: 2px;
+  }
+
+  input,
+  select,
+  button,
+  textarea {
+    font: inherit;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@keyframes qa-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes qa-pulse-ring {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.92);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.25);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.25);
+  }
+}
+
+.qa-fade-up {
+  animation: qa-fade-up 260ms ease-out both;
+}
+
+.qa-pulse-ring::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid var(--color-teal-400);
+  animation: qa-pulse-ring 1.8s ease-out infinite;
+}
+
+/* Entrance display: the QR must dominate the screen and stay legible from a distance. */
+.qa-display-grid {
+  background-image:
+    linear-gradient(to right, rgba(148, 180, 190, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 180, 190, 0.06) 1px, transparent 1px);
+  background-size: 48px 48px;
+}

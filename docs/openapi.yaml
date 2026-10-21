@@ -1,130 +1,777 @@
 openapi: 3.1.0
 info:
   title: qr-attendance API
-  version: 0.1.0
-  description: Raw attendance collection. Timestamps are server assigned; no entry/exit or payroll inference is performed.
+  version: 1.0.0
+  description: |
+    Attendance collection for one company and one entrance display.
+
+    All endpoints are under `/api/v1`, return JSON, and are served with
+    `Cache-Control: no-store`. Timestamps in JSON are RFC 3339 UTC strings; the client
+    formats them in `DISPLAY_TIMEZONE`.
+
+    Mutating requests (`POST`, `PATCH`) require the double-submit CSRF header
+    `x-csrf-token`, whose value must equal the `qa_csrf` cookie, **and** a matching
+    `Origin` (or `Referer`) header. `GET /api/v1/auth/csrf` issues both the cookie and the
+    token value.
+
+    Errors always use the `Error` schema: a stable machine-readable `code`, a human
+    message, and the request id that also appears in the `X-Request-Id` response header.
 servers:
-  - url: /api/v1
+  - url: https://{host}
+    variables:
+      host:
+        default: localhost:3000
+tags:
+  - name: auth
+  - name: attendance
+  - name: display
+  - name: admin
+  - name: ops
+
 paths:
   /health:
     get:
-      summary: Health status
+      tags: [ops]
+      summary: Minimal health probe
+      description: Reports server time and whether this instance has booted the database. No secrets.
       responses:
-        '200': { description: Service is running }
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, server_time, database]
+                properties:
+                  status: { type: string, const: ok }
+                  server_time: { type: string, format: date-time }
+                  database:
+                    type: object
+                    properties:
+                      loaded: { type: boolean }
+                      boot_count: { type: integer }
+
   /auth/csrf:
     get:
-      summary: Establish a CSRF cookie and return its token
+      tags: [auth]
+      summary: Establish the browser flow and issue a CSRF token
+      description: |
+        Creates a `browser_flows` row (two hour lifetime) when this browser has none, and
+        returns a CSRF token that must be echoed in `x-csrf-token` on mutations. Both the
+        CSRF cookie and the flow cookie are HttpOnly.
       responses:
-        '200': { description: CSRF token }
+        '200':
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [csrf_token, flow_created, server_time]
+                properties:
+                  csrf_token: { type: string }
+                  flow_created: { type: boolean }
+                  server_time: { type: string, format: date-time }
+
   /auth/login:
     post:
-      summary: Create a persistent browser session
+      tags: [auth]
+      summary: Sign in and rotate the session
+      description: |
+        Rate limited to 20 attempts per minute per client IP, in memory and per instance.
+        Any session presented with the request is revoked before a new one is issued. A
+        pending attendance attempt bound to this browser flow is returned so the caller can
+        complete it immediately. A failed login writes nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, maxLength: 80 }
+                password: { type: string, format: password }
       responses:
-        '200': { description: Session created }
-        '401': { description: Invalid credentials }
+        '200':
+          description: Signed in
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: qa_session and qa_csrf
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, csrf_token, pending_attempt]
+                properties:
+                  user: { $ref: '#/components/schemas/AuthUser' }
+                  csrf_token: { type: string }
+                  pending_attempt:
+                    oneOf:
+                      - type: 'null'
+                      - type: object
+                        required: [id, expires_at]
+                        properties:
+                          id: { type: string, format: uuid }
+                          expires_at: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403':
+          description: Account disabled, or CSRF/origin rejected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /auth/logout:
     post:
+      tags: [auth]
       summary: Revoke the current session
       responses:
-        '200': { description: Session revoked }
+        '200':
+          description: Signed out; cookies cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+
   /auth/me:
     get:
-      summary: Current user and role
+      tags: [auth]
+      summary: Current user and permissions
       responses:
-        '200': { description: Current user }
-        '401': { description: Authentication required }
+        '200':
+          description: Current session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user: { $ref: '#/components/schemas/AuthUser' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
   /auth/change-password:
     post:
-      summary: Change current user's password
+      tags: [auth]
+      summary: Change own password
+      description: Verifies the current password, then revokes every other session of that user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, format: password }
+                new_password: { type: string, format: password, minLength: 8 }
       responses:
-        '200': { description: Password changed }
-  /admin/users:
-    get:
-      summary: List users (admin)
-      responses:
-        '200': { description: User list }
-    post:
-      summary: Create user (admin)
-      responses:
-        '201': { description: User created }
-        '409': { description: Username or employee code already exists }
-  /admin/users/{id}:
-    patch:
-      summary: Edit user details and role (admin)
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-      responses:
-        '200': { description: User updated }
-        '409': { description: Conflict or last-admin protection }
-  /admin/users/{id}/reset-password:
-    post:
-      summary: Reset a user's password and revoke their sessions (admin)
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-      responses:
-        '200': { description: Password reset }
-  /admin/settings:
-    get:
-      summary: Read QR interval (admin)
-      responses:
-        '200': { description: Settings }
-    patch:
-      summary: Set QR interval (3 to 60 seconds) (admin)
-      responses:
-        '200': { description: Settings saved }
-  /admin/display/activate:
-    post:
-      summary: Provision a restricted display cookie (admin)
-      responses:
-        '201': { description: Display provisioned }
-  /admin/display/revoke:
-    post:
-      summary: Revoke display credentials (admin)
-      responses:
-        '200': { description: Displays revoked }
-  /display/challenge:
-    get:
-      summary: Get current display QR and timing (display cookie required)
-      responses:
-        '200': { description: Current challenge }
-        '401': { description: Display is not provisioned }
+        '200':
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  defaultPasswordPending: { type: boolean }
+        '400':
+          description: Wrong current password or invalid new password
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
   /attendance/attempts:
     post:
-      summary: Exchange a visible challenge for a browser-bound pending attempt
+      tags: [attendance]
+      summary: Exchange a scanned QR code for a pending attempt
+      description: |
+        Validates the challenge by recomputation (HMAC over display id, schedule version,
+        interval and interval start), then records a pending attempt bound to this
+        browser's flow cookie. `requires_login` tells the client whether the employee must
+        sign in before the attempt can be completed. This is the only thing that records a
+        scan: viewing `/scan` writes nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge]
+              properties:
+                challenge: { type: string, minLength: 8, maxLength: 128 }
       responses:
-        '201': { description: Pending attempt created }
-        '410': { description: QR challenge expired }
+        '201':
+          description: Attempt created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attempt_id, display_id, expires_at, requires_login]
+                properties:
+                  attempt_id: { type: string, format: uuid }
+                  display_id: { type: string, format: uuid }
+                  expires_at: { type: string, format: date-time }
+                  requires_login: { type: boolean }
+        '400':
+          description: Browser flow missing (page must be reloaded) or malformed body
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '410':
+          description: Code expired, or no display is active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /attendance/attempts/{id}/complete:
     post:
-      summary: Complete a pending attempt as the authenticated employee
+      tags: [attendance]
+      summary: Complete a pending attempt and record the event
+      description: |
+        The employee is resolved exclusively from the session, never from the payload.
+        `recorded_at` is the exchange time, `committed_at` the insert time. Idempotent per
+        attempt: repeating the call returns the same event (unique constraint on
+        `attendance_events.attempt_id`).
       parameters:
-        - in: path
-          name: id
+        - name: id
+          in: path
           required: true
-          schema: { type: string }
+          schema: { type: string, format: uuid }
       responses:
-        '201': { description: Attendance event recorded }
-        '200': { description: Idempotent replay }
-        '410': { description: Pending attempt expired }
+        '200':
+          description: Event recorded (or already recorded)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipt, user, today]
+                properties:
+                  receipt:
+                    type: object
+                    required: [event_id, recorded_at, committed_at, already_completed]
+                    properties:
+                      event_id: { type: string, format: uuid }
+                      recorded_at: { type: string, format: date-time }
+                      committed_at: { type: string, format: date-time }
+                      recorded_time_local: { type: string, example: '08:31:07' }
+                      employee_code: { type: string }
+                      display_id: { type: string, format: uuid }
+                      already_completed: { type: boolean }
+                  user: { $ref: '#/components/schemas/AuthUser' }
+                  display_timezone: { type: string }
+                  today:
+                    type: array
+                    items: { $ref: '#/components/schemas/AttendanceEvent' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404':
+          description: Attempt unknown, or belonging to another browser flow
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '410':
+          description: Attempt expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /attendance/me:
     get:
-      summary: List current employee attendance events
+      tags: [attendance]
+      summary: The signed-in employee's raw events
+      parameters:
+        - { $ref: '#/components/parameters/FromDate' }
+        - { $ref: '#/components/parameters/ToDate' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
       responses:
-        '200': { description: Employee event list }
+        '200':
+          description: Own events, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HistoryPage' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /display/challenge:
+    get:
+      tags: [display]
+      summary: Current derived code for a provisioned display
+      description: |
+        Requires the display credential cookie issued by `/admin/display/activate`. There is
+        no unauthenticated way to read the current code. Deriving the token costs no write,
+        so the display may poll about once per second.
+      responses:
+        '200':
+          description: Current challenge
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  [token, display_id, display_label, qr_url, server_time, next_rotation,
+                   expires_at, qr_interval, schedule_version]
+                properties:
+                  token: { type: string }
+                  display_id: { type: string, format: uuid }
+                  display_label: { type: string }
+                  qr_url: { type: string, format: uri }
+                  server_time: { type: string, format: date-time }
+                  next_rotation: { type: string, format: date-time }
+                  expires_at: { type: string, format: date-time }
+                  qr_interval: { type: integer, minimum: 3, maximum: 60 }
+                  schedule_version: { type: integer }
+                  acceptance_overlap: { type: integer }
+                  display_timezone: { type: string }
+        '401':
+          description: This browser is not a provisioned display
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /admin/users:
+    get:
+      tags: [admin]
+      summary: List users
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Matches display name, username or employee code.
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200':
+          description: Users, without secrets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [admin]
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, employee_code, display_name, password, role]
+              properties:
+                username: { type: string, minLength: 2, maxLength: 60 }
+                employee_code: { type: string, minLength: 1, maxLength: 40 }
+                display_name: { type: string, minLength: 1, maxLength: 120 }
+                password: { type: string, format: password, minLength: 8 }
+                role: { type: string, enum: [admin, employee] }
+                active: { type: boolean, default: true }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '409':
+          description: Username or employee code already taken
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /admin/users/{id}:
+    patch:
+      tags: [admin]
+      summary: Edit details, role or active status
+      description: |
+        Deactivating a user revokes all of their sessions. Demoting or deactivating the last
+        active administrator is refused with `last_admin`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string, minLength: 2, maxLength: 60 }
+                employee_code: { type: string, minLength: 1, maxLength: 40 }
+                display_name: { type: string, minLength: 1, maxLength: 120 }
+                role: { type: string, enum: [admin, employee] }
+                active: { type: boolean }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '409':
+          description: Duplicate code, or `last_admin`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /admin/users/{id}/reset-password:
+    post:
+      tags: [admin]
+      summary: Reset a password and revoke that user's sessions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, format: password, minLength: 8 }
+      responses:
+        '200':
+          description: Password reset
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+
+  /admin/settings:
+    get:
+      tags: [admin]
+      summary: Rotation schedule and provisioned displays
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  qr_interval: { type: integer }
+                  schedule_version: { type: integer }
+                  updated_at: { type: string, format: date-time }
+                  interval_bounds:
+                    type: object
+                    properties:
+                      min: { type: integer }
+                      max: { type: integer }
+                  display_timezone: { type: string }
+                  acceptance_overlap_seconds: { type: integer }
+                  displays:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        label: { type: string }
+                        active: { type: boolean }
+                        created_at: { type: string, format: date-time }
+                        revoked_at:
+                          oneOf:
+                            - type: string
+                              format: date-time
+                            - type: 'null'
+                  this_browser_display_id:
+                    oneOf:
+                      - type: string
+                        format: uuid
+                      - type: 'null'
+    patch:
+      tags: [admin]
+      summary: Change the QR rotation interval
+      description: |
+        Bumps `schedule_version`, which changes every derived token immediately — codes
+        already on a display stop working without any cleanup write. The change is a single
+        database write, performed only when the value actually changes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [qr_interval]
+              properties:
+                qr_interval: { type: integer, minimum: 3, maximum: 60 }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  qr_interval: { type: integer }
+                  schedule_version: { type: integer }
+                  updated_at: { type: string, format: date-time }
+                  changed: { type: boolean }
+
+  /admin/display/activate:
+    post:
+      tags: [admin]
+      summary: Provision this browser as an entrance display
+      description: |
+        Creates the display and hands this browser a restricted HttpOnly credential that can
+        only read `/display/challenge`. The administrator's session is revoked in the same
+        request, so a monitor never keeps admin rights.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        '201':
+          description: Provisioned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  display:
+                    type: object
+                    properties:
+                      id: { type: string, format: uuid }
+                      label: { type: string }
+                      active: { type: boolean }
+                      created_at: { type: string, format: date-time }
+                  session_revoked: { type: boolean }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /admin/display/revoke:
+    post:
+      tags: [admin]
+      summary: Revoke a display
+      description: Deactivates the display so it can no longer fetch the current code. Without `display_id` the display bound to this browser is revoked.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_id: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked:
+                    type: object
+                    properties:
+                      id: { type: string, format: uuid }
+                      label: { type: string }
+        '404':
+          description: Display not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /admin/attendance:
     get:
-      summary: List all attendance events (admin)
+      tags: [admin]
+      summary: All employees' raw events
+      parameters:
+        - { $ref: '#/components/parameters/FromDate' }
+        - { $ref: '#/components/parameters/ToDate' }
+        - name: employee_code
+          in: query
+          schema: { type: string }
+        - name: user_id
+          in: query
+          schema: { type: string, format: uuid }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
       responses:
-        '200': { description: Company event list }
+        '200':
+          description: Events, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HistoryPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /cron/cleanup:
+    post:
+      tags: [ops]
+      summary: Purge expired sessions, flows and uncompleted attempts
+      description: |
+        Guarded by `Authorization: Bearer $CRON_SECRET` (Vercel Cron sends it). Exactly one
+        bounded write. Attendance events are never touched. `GET` is accepted as well because
+        Vercel Cron issues GET requests.
+      responses:
+        '200':
+          description: Cleanup performed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  removed:
+                    type: object
+                    properties:
+                      sessions: { type: integer }
+                      flows: { type: integer }
+                      attempts: { type: integer }
+        '401':
+          description: Missing or invalid cron credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
 components:
-  securitySchemes:
-    sessionCookie:
-      type: apiKey
-      in: cookie
-      name: session
+  parameters:
+    FromDate:
+      name: from
+      in: query
+      description: Calendar day in DISPLAY_TIMEZONE, inclusive.
+      schema: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    ToDate:
+      name: to
+      in: query
+      description: Calendar day in DISPLAY_TIMEZONE, inclusive (translated to an exclusive UTC upper bound).
+      schema: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: page_size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+          enum:
+            [bad_request, invalid_field, invalid_credentials, account_inactive,
+             unauthenticated, forbidden, not_found, csrf_failed, rate_limited,
+             invalid_challenge, expired_challenge, attempt_expired, attempt_not_found,
+             attempt_completed, conflict, last_admin, write_conflict,
+             storage_unavailable, internal_error]
+        message: { type: string }
+        request_id: { type: string, format: uuid }
+        field: { type: string }
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/Error' }
+    AuthUser:
+      type: object
+      required:
+        [id, username, employee_code, display_name, role, active,
+         default_password_pending, authenticated_at, session_expires_at, permissions]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        employee_code: { type: string }
+        display_name: { type: string }
+        role: { type: string, enum: [admin, employee] }
+        active: { type: boolean }
+        default_password_pending: { type: boolean }
+        authenticated_at: { type: string, format: date-time }
+        session_expires_at: { type: string, format: date-time }
+        permissions:
+          type: object
+          properties:
+            admin: { type: boolean }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        employee_code: { type: string }
+        display_name: { type: string }
+        role: { type: string, enum: [admin, employee] }
+        active: { type: boolean }
+        default_password_pending: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AttendanceEvent:
+      type: object
+      required: [id, user_id, employee_code, display_id, recorded_at, committed_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        display_name: { type: string }
+        employee_code:
+          type: string
+          description: Snapshot taken at record time; survives a later code change.
+        display_id: { type: string, format: uuid }
+        recorded_at:
+          type: string
+          format: date-time
+          description: Server time at challenge exchange — when the employee scanned.
+        committed_at:
+          type: string
+          format: date-time
+          description: Server time when authentication and the insert finished.
+    HistoryPage:
+      type: object
+      required: [items, page, page_size, total, display_timezone]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AttendanceEvent' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        display_timezone: { type: string }
+
+  responses:
+    Unauthenticated:
+      description: No valid session
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: Not permitted for this role
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Conflict:
+      description: Conflicting edit, last-admin protection, or an exhausted write retry
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    RateLimited:
+      description: Too many attempts from this client
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
