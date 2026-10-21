@@ -6,7 +6,7 @@ A single-company attendance collection prototype. Employees scan the entrance QR
 
 The local application contains a Go REST API, Angular portal, SQLite migration, admin user management, persistent sessions, CSRF checks, display enrollment, rotating QR challenges, browser-bound attendance attempts, and employee/admin event lists.
 
-**Hosted mode is not configured or deployable yet.** The Go module named in the original plan (libsql-client-go) is deprecated. The newer Turso Go driver is currently documented as beta, and the official materials reviewed for this implementation did not establish the remote hosted database transaction support this application needs. This project deliberately uses durable local SQLite only until that remote adapter is validated. No Vercel configuration, hosted secrets, GitHub repository, or cloud database has been created.
+**Hosted mode is not configured or deployable yet.** The Go module named in the original plan (libsql-client-go) is deprecated. The newer Turso Go driver is currently documented as beta, and the official materials reviewed for this implementation did not establish the remote hosted database transaction support this application needs. This project deliberately uses durable local SQLite only until that remote adapter is validated. No Vercel configuration, hosted secrets, or cloud database has been created. The source is published at https://github.com/shahrokh-mi/qr-attendance.
 
 ## Requirements
 
@@ -62,7 +62,7 @@ The session cookie is HttpOnly, SameSite=Lax, and Secure by default. Set COOKIE_
 
 Do not deploy this build yet. A Vercel Function filesystem is not durable database storage. Before Vercel deployment, the hosted Turso/libSQL driver must be selected and validated for Go runtime compatibility, write transactions, concurrency, and schema migrations. That work requires a working Turso account/database and credentials. Production and preview need separate databases and secrets. After the remote adapter is validated, deployment also needs connected GitHub and Vercel accounts so the repository can be published and imported.
 
-The GitHub and Vercel integrations were surfaced for connection in Codex, but this session cannot complete the account connection step itself. The next user action is to connect those two integrations in the app; no provider credentials have been requested or stored here.
+The GitHub and Vercel integrations were surfaced for connection in Codex, but this session cannot complete the account connection step itself. The repository is now published; the remaining user action is to connect a Vercel account so the repository can be imported. No provider credentials have been requested or stored here.
 
 ## Known limitations
 
